@@ -1,0 +1,127 @@
+import express from 'express';
+import { MongoClient, ObjectId } from 'mongodb';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const app = express();
+app.use(express.json());
+
+const COLLECTION_NAME = "todo_lists";
+const MONGO_URL = process.env.MONGODB_URI;
+const DEBUG = ["1", "true", "on", "yes"].includes((process.env.DEBUG || "").trim().toLowerCase());
+
+if (!MONGO_URL) {
+    throw new Error("Environment variable MONGODB_URI is required.");
+}
+
+let db;
+(async function connectDB() {
+    try {
+        const client = new MongoClient(MONGO_URL);
+        await client.connect();
+        db = client.db();
+        await db.command({ ping: 1 });
+        console.log("Connected to MongoDB");
+    } catch (err) {
+        console.error("Failed to connect to MongoDB", err);
+        process.exit(1);
+    }
+})();
+
+app.get('/api/lists', async (req, res) => {
+    try {
+        const todoLists = await db.collection(COLLECTION_NAME).find({}, { projection: { name: 1 } }).toArray();
+        res.json(todoLists);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to fetch lists." });
+    }
+});
+
+app.post('/api/lists', async (req, res) => {
+    try {
+        const { name } = req.body;
+        const result = await db.collection(COLLECTION_NAME).insertOne({ name, items: [] });
+        res.status(201).json({ id: result.insertedId, name });
+    } catch (err) {
+        res.status(500).json({ error: "Failed to create list." });
+    }
+});
+
+app.get('/api/lists/:listId', async (req, res) => {
+    try {
+        const { listId } = req.params;
+        const list = await db.collection(COLLECTION_NAME).findOne({ _id: new ObjectId(listId) });
+        if (!list) return res.status(404).json({ error: "List not found." });
+        res.json(list);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to fetch list." });
+    }
+});
+
+app.delete('/api/lists/:listId', async (req, res) => {
+    try {
+        const { listId } = req.params;
+        const result = await db.collection(COLLECTION_NAME).deleteOne({ _id: new ObjectId(listId) });
+        if (result.deletedCount === 0) return res.status(404).json({ error: "List not found." });
+        res.status(204).end();
+    } catch (err) {
+        res.status(500).json({ error: "Failed to delete list." });
+    }
+});
+
+app.post('/api/lists/:listId/items', async (req, res) => {
+    try {
+        const { listId } = req.params;
+        const { label } = req.body;
+        const result = await db.collection(COLLECTION_NAME).findOneAndUpdate(
+            { _id: new ObjectId(listId) },
+            { $push: { items: { id: new ObjectId(), label, checked: false } } },
+            { returnDocument: "after" }
+        );
+        if (!result.value) return res.status(404).json({ error: "List not found." });
+        res.status(201).json(result.value);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to add item." });
+    }
+});
+
+app.delete('/api/lists/:listId/items/:itemId', async (req, res) => {
+    try {
+        const { listId, itemId } = req.params;
+        const result = await db.collection(COLLECTION_NAME).findOneAndUpdate(
+            { _id: new ObjectId(listId) },
+            { $pull: { items: { id: new ObjectId(itemId) } } },
+            { returnDocument: "after" }
+        );
+        if (!result.value) return res.status(404).json({ error: "List or item not found." });
+        res.json(result.value);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to delete item." });
+    }
+});
+
+app.patch('/api/lists/:listId/checked_state', async (req, res) => {
+    try {
+        const { listId } = req.params;
+        const { itemId, checkedState } = req.body;
+        const result = await db.collection(COLLECTION_NAME).findOneAndUpdate(
+            { _id: new ObjectId(listId), "items.id": new ObjectId(itemId) },
+            { $set: { "items.$.checked": checkedState } },
+            { returnDocument: "after" }
+        );
+        if (!result.value) return res.status(404).json({ error: "List or item not found." });
+        res.json(result.value);
+    } catch (err) {
+        res.status(500).json({ error: "Failed to update item state." });
+    }
+});
+
+app.get('/api/dummy', (req, res) => {
+    res.json({ id: new ObjectId().toString(), when: new Date() });
+});
+
+const PORT = 3001;
+app.listen(PORT, () => {
+    console.log(`Server is running on http://localhost:${PORT}`);
+});

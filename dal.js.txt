@@ -1,0 +1,149 @@
+const { ObjectId } = require('mongodb');
+const { v4: uuidv4 } = require('uuid');
+
+class ListSummary {
+    constructor(id, name, itemCount) {
+        this.id = id;
+        this.name = name;
+        this.itemCount = itemCount;
+    }
+
+    static fromDoc(doc) {
+        return new ListSummary(
+            doc._id.toString(),
+            doc.name,
+            doc.itemCount
+        );
+    }
+}
+
+class ToDoListItem {
+    constructor(id, label, checked) {
+        this.id = id;
+        this.label = label;
+        this.checked = checked;
+    }
+
+    static fromDoc(item) {
+        return new ToDoListItem(
+            item.id,
+            item.label,
+            item.checked
+        );
+    }
+}
+
+class ToDoList {
+    constructor(id, name, items) {
+        this.id = id;
+        this.name = name;
+        this.items = items;
+    }
+
+    static fromDoc(doc) {
+        return new ToDoList(
+            doc._id.toString(),
+            doc.name,
+            doc.items.map(ToDoListItem.fromDoc)
+        );
+    }
+}
+
+class ToDoDAL {
+    constructor(todoCollection) {
+        this.todoCollection = todoCollection;
+    }
+
+    async listToDoLists(session = null) {
+        const cursor = this.todoCollection.find(
+            {},
+            {
+                projection: {
+                    name: 1,
+                    itemCount: { $size: "$items" }
+                },
+                sort: { name: 1 },
+                session
+            }
+        );
+
+        const lists = [];
+        await cursor.forEach(doc => {
+            lists.push(ListSummary.fromDoc(doc));
+        });
+        return lists;
+    }
+
+    async createToDoList(name, session = null) {
+        const response = await this.todoCollection.insertOne(
+            { name, items: [] },
+            { session }
+        );
+        return response.insertedId.toString();
+    }
+
+    async getToDoList(id, session = null) {
+        const doc = await this.todoCollection.findOne(
+            { _id: new ObjectId(id) },
+            { session }
+        );
+        return doc ? ToDoList.fromDoc(doc) : null;
+    }
+
+    async deleteToDoList(id, session = null) {
+        const response = await this.todoCollection.deleteOne(
+            { _id: new ObjectId(id) },
+            { session }
+        );
+        return response.deletedCount === 1;
+    }
+
+    async createItem(id, label, session = null) {
+        const result = await this.todoCollection.findOneAndUpdate(
+            { _id: new ObjectId(id) },
+            {
+                $push: {
+                    items: {
+                        id: uuidv4(),
+                        label,
+                        checked: false
+                    }
+                }
+            },
+            {
+                returnDocument: 'after',
+                session
+            }
+        );
+
+        return result.value ? ToDoList.fromDoc(result.value) : null;
+    }
+
+    async setCheckedState(docId, itemId, checkedState, session = null) {
+        const result = await this.todoCollection.findOneAndUpdate(
+            { _id: new ObjectId(docId), "items.id": itemId },
+            { $set: { "items.$.checked": checkedState } },
+            {
+                returnDocument: 'after',
+                session
+            }
+        );
+
+        return result.value ? ToDoList.fromDoc(result.value) : null;
+    }
+
+    async deleteItem(docId, itemId, session = null) {
+        const result = await this.todoCollection.findOneAndUpdate(
+            { _id: new ObjectId(docId) },
+            { $pull: { items: { id: itemId } } },
+            {
+                returnDocument: 'after',
+                session
+            }
+        );
+
+        return result.value ? ToDoList.fromDoc(result.value) : null;
+    }
+}
+
+module.exports = { ListSummary, ToDoListItem, ToDoList, ToDoDAL };
